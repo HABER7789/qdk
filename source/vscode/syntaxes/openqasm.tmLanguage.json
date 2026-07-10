@@ -47,7 +47,7 @@
       "patterns": [
         {
           "name": "keyword.control.openqasm",
-          "match": "(?<!\\s*\\.\\s*)\\b(in|for|return|if|else|switch|while)\\b(?!\\s*\\.)"
+          "match": "(?<!\\s*\\.\\s*)\\b(in|for|return|if|else|switch|while|break|continue)\\b(?!\\s*\\.)"
         },
         {
           "name": "keyword.other.openqasm",
