@@ -14,6 +14,7 @@ use qsc_ast::ast::{
     PatKind, Path, PathKind, QubitInit, QubitInitKind, Spec, Stmt, StmtKind, StringComponent,
     TernOp, TyKind, TypeParameter, UnOp,
 };
+use qsc_ast::visit::{self, Visitor};
 use qsc_data_structures::span::Span;
 use qsc_hir::{
     hir::{self, ItemId},
@@ -41,6 +42,60 @@ impl<T> Partial<T> {
         Partial {
             ty: self.ty,
             diverges: diverges || self.diverges,
+        }
+    }
+}
+
+/// Finds loop control expressions that target the loop whose body is being visited.
+///
+/// The visitor starts inside that loop's body, so a depth of zero represents the
+/// target loop. Entering a nested loop body increments the depth; any `break` or
+/// `continue` found at a positive depth targets that nested loop and must not affect
+/// the target loop's divergence.
+#[derive(Default)]
+struct LoopControlPresence {
+    /// Number of nested loop bodies entered since visiting the target loop's body.
+    loop_depth: u32,
+    has_break: bool,
+    has_continue: bool,
+}
+
+impl LoopControlPresence {
+    fn visit_nested_loop_body(&mut self, body: &Block) {
+        self.loop_depth += 1;
+        self.visit_block(body);
+        self.loop_depth -= 1;
+    }
+
+    fn any(&self) -> bool {
+        self.has_break || self.has_continue
+    }
+}
+
+impl<'a> Visitor<'a> for LoopControlPresence {
+    fn visit_item(&mut self, _item: &'a ast::Item) {}
+
+    fn visit_expr(&mut self, expr: &'a Expr) {
+        match &*expr.kind {
+            ExprKind::Break if self.loop_depth == 0 => self.has_break = true,
+            ExprKind::Continue if self.loop_depth == 0 => self.has_continue = true,
+            ExprKind::For(_, iterable, body) => {
+                self.visit_expr(iterable);
+                self.visit_nested_loop_body(body);
+            }
+            ExprKind::While(cond, body) => {
+                self.visit_expr(cond);
+                self.visit_nested_loop_body(body);
+            }
+            ExprKind::Repeat(body, until, fixup) => {
+                self.visit_nested_loop_body(body);
+                self.visit_expr(until);
+                if let Some(fixup) = fixup {
+                    self.visit_block(fixup);
+                }
+            }
+            ExprKind::Lambda(..) => {}
+            _ => visit::walk_expr(self, expr),
         }
     }
 }
@@ -352,6 +407,8 @@ impl<'a> Context<'a> {
                 }
             }
             ExprKind::For(item, container, body) => {
+                let mut loop_control = LoopControlPresence::default();
+                loop_control.visit_block(body);
                 let item_ty = self.infer_pat(item);
                 let container_span = container.span;
                 let container = self.infer_expr(container);
@@ -365,7 +422,13 @@ impl<'a> Context<'a> {
                 let body_span = body.span;
                 let body = self.infer_block(body);
                 self.inferrer.eq(body_span, Ty::UNIT, body.ty);
-                converge(Ty::UNIT).diverge_if(container.diverges || body.diverges)
+                // A break or continue exits (or restarts) this loop rather than the
+                // enclosing function, so a body that diverges only via loop control does
+                // not make the loop itself divergent. A body that diverges via return or
+                // fail does. The container is always evaluated, so its divergence counts
+                // unconditionally.
+                converge(Ty::UNIT)
+                    .diverge_if(container.diverges || (body.diverges && !loop_control.any()))
             }
             ExprKind::If(cond, if_true, if_false) => {
                 let cond_span = cond.span;
@@ -496,22 +559,27 @@ impl<'a> Context<'a> {
                 converge(Ty::Prim(ty)).diverge_if(diverges)
             }
             ExprKind::Repeat(body, until, fixup) => {
+                let mut loop_control = LoopControlPresence::default();
+                loop_control.visit_block(body);
                 let body_span = body.span;
                 let body = self.infer_block(body);
                 self.inferrer.eq(body_span, Ty::UNIT, body.ty);
                 let until_span = until.span;
                 let until = self.infer_expr(until);
                 self.inferrer.eq(until_span, Ty::Prim(Prim::Bool), until.ty);
-                let fixup_diverges = match fixup {
-                    None => false,
+                match fixup {
+                    None => {}
                     Some(f) => {
                         let f_span = f.span;
                         let f = self.infer_block(f);
                         self.inferrer.eq(f_span, Ty::UNIT, f.ty);
-                        f.diverges
                     }
-                };
-                converge(Ty::UNIT).diverge_if(body.diverges || until.diverges || fixup_diverges)
+                }
+                // A break bypasses `until`, while continue reaches it. The fixup is
+                // conditional, so its divergence alone cannot prove the loop diverges.
+                let diverges = (body.diverges && !loop_control.any())
+                    || (until.diverges && !loop_control.has_break);
+                converge(Ty::UNIT).diverge_if(diverges)
             }
             ExprKind::Return(expr) => {
                 let ty = self.infer_expr(expr).ty;
@@ -593,13 +661,21 @@ impl<'a> Context<'a> {
             }
             ExprKind::UnOp(op, expr) => self.infer_unop(*op, expr),
             ExprKind::While(cond, body) => {
+                let mut loop_control = LoopControlPresence::default();
+                loop_control.visit_block(body);
                 let cond_span = cond.span;
                 let cond = self.infer_expr(cond);
                 self.inferrer.eq(cond_span, Ty::Prim(Prim::Bool), cond.ty);
                 let body_span = body.span;
                 let body = self.infer_block(body);
                 self.inferrer.eq(body_span, Ty::UNIT, body.ty);
-                converge(Ty::UNIT).diverge_if(cond.diverges || body.diverges)
+                // A break or continue exits (or restarts) this loop rather than the
+                // enclosing function, so a body that diverges only via loop control does
+                // not make the loop itself divergent. A body that diverges via return or
+                // fail does. The condition is always evaluated, so its divergence counts
+                // unconditionally.
+                converge(Ty::UNIT)
+                    .diverge_if(cond.diverges || (body.diverges && !loop_control.any()))
             }
             ExprKind::Hole => {
                 self.typed_holes.push((expr.id, expr.span));
