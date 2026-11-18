@@ -383,31 +383,52 @@ function createLinkElement(href: string, title: string) {
 
 function _style_gate_text(gate: SVGTextElement) {
   if (!use_katex) return;
-  let label = gate.textContent || "";
+  const label = gate.textContent || "";
 
   // In general, use the regular math font
   gate.classList.add("qs-maintext");
 
+  // Build the label from DOM nodes rather than markup so that characters such as `<` and `&` in
+  // operation names stay text.
+  gate.replaceChildren();
+  const styledText = label.endsWith("'") ? label.slice(0, -1) : label;
+
   // Wrap any latin or greek letters in tspan with KaTeX_Math font Style the entire Greek + Coptic
   // block (https://unicodeplus.com/block/0370) Note this deliberately leaves ASCII digits [0-9]
-  // non-italic
-  const italicChars = /[a-zA-Z\u{0370}-\u{03ff}]+/gu;
-
-  label = label.replace(italicChars, `<tspan class='qs-mathtext'>$&</tspan>`);
-
-  // Subscript any `_0`, `_1`, etc. in the label
-  label = label.replace(
-    /_(\d+)/g,
-    `<tspan baseline-shift="sub" font-size="65%">$1</tspan>`,
-  );
+  // non-italic. Subscript any `_0`, `_1`, etc. in the label.
+  let offset = 0;
+  for (const match of styledText.matchAll(
+    /_(\d+)|[a-zA-Z\u{0370}-\u{03ff}]+/gu,
+  )) {
+    const index = match.index;
+    if (index > offset) {
+      gate.append(styledText.slice(offset, index));
+    }
+    const tspan =
+      match[1] === undefined
+        ? createSvgElement("tspan", { class: "qs-mathtext" })
+        : createSvgElement("tspan", {
+            "baseline-shift": "sub",
+            "font-size": "65%",
+          });
+    tspan.append(match[1] ?? match[0]);
+    gate.appendChild(tspan);
+    offset = index + match[0].length;
+  }
+  if (offset < styledText.length) {
+    gate.append(styledText.slice(offset));
+  }
 
   // Replace a trailing ' with the proper unicode dagger symbol
-  label = label.replace(
-    /'$/,
-    `<tspan dx="2" dy="-3" style="font-size: 0.8em;">${mathChars.dagger}</tspan>`,
-  );
-
-  gate.innerHTML = label;
+  if (styledText !== label) {
+    const dagger = createSvgElement("tspan", {
+      dx: "2",
+      dy: "-3",
+      style: "font-size: 0.8em;",
+    });
+    dagger.append(mathChars.dagger);
+    gate.appendChild(dagger);
+  }
 }
 
 /**
