@@ -11,7 +11,8 @@ import type { NotebookCatalogCourse, NotebookCatalogUnit } from "../types.js";
 /**
  * Materialize the working copy for every unit in the course: derive each
  * `*.workbook.ipynb` sibling from the authored notebook. Existing workbooks
- * are never overwritten, preserving learner edits.
+ * are never overwritten, preserving learner edits. A unit that fails is
+ * logged and skipped so the rest of the course still loads.
  */
 export async function materializeCourseWorkbooks(
   course: NotebookCatalogCourse,
@@ -21,13 +22,22 @@ export async function materializeCourseWorkbooks(
     if (await uriExists(dest)) {
       continue;
     }
-    await materializeNotebook(sourceNotebookUri(unit), dest, unit.id);
+    const src = sourceNotebookUri(unit);
+    try {
+      await materializeNotebook(src, dest, unit.id);
+    } catch (e) {
+      log.warn(
+        `Failed to materialize ${src.fsPath} → ${dest.fsPath}: ${String(e)}`,
+      );
+    }
   }
 }
 
 /**
  * Re-materialize a single unit: overwrite its `*.workbook.ipynb`
- * with a fresh copy derived from the authored notebook.
+ * with a fresh copy derived from the authored notebook. Rejects when the
+ * copy can't be written, so a reset doesn't clear progress for a workbook it
+ * didn't replace.
  */
 export async function rematerializeUnitWorkbook(
   unit: NotebookCatalogUnit,
@@ -54,23 +64,14 @@ async function materializeNotebook(
   dest: vscode.Uri,
   unitId: string,
 ): Promise<void> {
-  try {
-    await ensureParentDir(dest);
-    const text = new TextDecoder().decode(
-      await vscode.workspace.fs.readFile(src),
-    );
-    const stripped = stripAuthoringCells(text, unitId);
-    if (stripped === undefined) {
-      await vscode.workspace.fs.copy(src, dest, { overwrite: true });
-      return;
-    }
-    await vscode.workspace.fs.writeFile(
-      dest,
-      new TextEncoder().encode(stripped),
-    );
-  } catch (e) {
-    log.warn(
-      `Failed to materialize ${src.fsPath} → ${dest.fsPath}: ${String(e)}`,
-    );
+  await ensureParentDir(dest);
+  const text = new TextDecoder().decode(
+    await vscode.workspace.fs.readFile(src),
+  );
+  const stripped = stripAuthoringCells(text, unitId);
+  if (stripped === undefined) {
+    await vscode.workspace.fs.copy(src, dest, { overwrite: true });
+    return;
   }
+  await vscode.workspace.fs.writeFile(dest, new TextEncoder().encode(stripped));
 }
