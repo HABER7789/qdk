@@ -1,3 +1,4 @@
+ipython
 nbclient
 nbformat
 pytest

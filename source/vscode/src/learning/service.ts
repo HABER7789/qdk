@@ -6,10 +6,22 @@ import { getExerciseSources } from "qsharp-lang/katas-md";
 import * as vscode from "vscode";
 import { FullProgramConfig, getProgramForDocument } from "../programConfig.js";
 import { getVenvInFolder } from "../pythonEnvs.js";
+import {
+  isCorrectQuizAnswer,
+  isLearningId,
+  isQuizOptionIds,
+  MIME_TYPE,
+  parseLearningPayload,
+  type MultipleChoicePayload,
+} from "../notebookRenderer/schema.js";
 import { ProgramRunStatus, runProgram } from "../run.js";
 import { EventType, sendTelemetryEvent } from "../telemetry.js";
 import { createCourseProvider, toDescriptor } from "./courseProvider.js";
-import { isNotebookCourse, workbookUri } from "./courseLayout.js";
+import {
+  isNotebookCourse,
+  notebookCellId,
+  workbookUri,
+} from "./courseLayout.js";
 import { promptInstallPythonExtensions } from "./python/extensionUtils.js";
 import {
   materializeCourseWorkbooks,
@@ -51,6 +63,7 @@ import type {
   NotebookCatalogCourse,
   NotebookCatalogUnit,
   CodeCellContent,
+  QuizContent,
 } from "./types.js";
 
 /**
@@ -396,8 +409,8 @@ export class LearningService {
   }
 
   /**
-   * Navigate to the activity whose `id` matches the given
-   * notebook cell ID. Returns `true` if the position was updated.
+   * Navigate to the activity backed by the given notebook cell.
+   * Returns `true` when the cell belongs to an activity.
    * Only meaningful for python-notebook courses.
    *
    * Updates the position silently — does **not** fire the state-change
@@ -411,7 +424,7 @@ export class LearningService {
       return false;
     }
     const unit = this.findUnit(this.position.unitId);
-    const activity = unit.activities.find((e) => e.id === cellId);
+    const activity = unit.activities.find((a) => a.id === cellId);
     if (!activity) {
       return false;
     }
@@ -434,7 +447,8 @@ export class LearningService {
   }
 
   /**
-   * Mark the activity with the given cell ID as complete.
+   * Mark an execution-completed activity with the given cell ID as complete.
+   * Quizzes complete only through {@link recordQuizAnswer}.
    * Returns `true` if the exercise was found and marked (or already complete).
    * Fires the state-change event so the treeview updates.
    */
@@ -444,6 +458,9 @@ export class LearningService {
     }
     const unit = this.findUnit(this.position.unitId);
     const exercise = unit.activities.find((e) => e.id === cellId);
+    if (exercise?.type === "quiz") {
+      return false;
+    }
     if (!exercise) {
       log.warn(`Unable to find exercise corresponding to cell ${cellId}`);
       return false;
@@ -460,6 +477,123 @@ export class LearningService {
     await this.saveProgress();
     this._onDidChangeState.fire(this.getState());
     return true;
+  }
+
+  /** Complete the quiz-cell activity after a correct checked answer. */
+  async recordQuizAnswer(
+    workbook: vscode.NotebookDocument,
+    quizId: string,
+    optionIds: string[],
+  ): Promise<boolean> {
+    const resolved = this.workspace
+      ? this.resolveWorkbookLocation(workbook.uri)
+      : undefined;
+    if (!resolved) {
+      log.warn(
+        "Learning: ignoring a quiz answer outside a loaded course workbook.",
+      );
+      return false;
+    }
+    const { course, unit } = resolved;
+    if (
+      !isQuizOptionIds(optionIds) ||
+      optionIds.length === 0 ||
+      new Set(optionIds).size !== optionIds.length
+    ) {
+      log.warn(`Learning: ignoring invalid choices for quiz "${quizId}".`);
+      return false;
+    }
+
+    let matched:
+      | {
+          cellId: string;
+          question: MultipleChoicePayload;
+        }
+      | undefined;
+    for (const cell of workbook.getCells()) {
+      const activity = unit.activities.find(
+        (entry) => entry.type === "quiz" && entry.id === cell.metadata.id,
+      );
+      if (!activity) {
+        continue;
+      }
+      let question: MultipleChoicePayload | undefined;
+      try {
+        for (const output of cell.outputs) {
+          for (const item of output.items) {
+            if (item.mime !== MIME_TYPE) {
+              continue;
+            }
+            const payload = parseLearningPayload(
+              JSON.parse(new TextDecoder().decode(item.data)),
+            );
+            if (
+              !isLearningId(payload.payloadId) ||
+              question !== undefined ||
+              payload.options.length < 2 ||
+              !isQuizOptionIds(payload.options.map((option) => option.id))
+            ) {
+              throw new Error(
+                "expected one quiz output with valid question and option IDs",
+              );
+            }
+            question = payload;
+          }
+        }
+      } catch (error) {
+        log.warn(
+          `Learning: ignoring malformed quiz outputs in "${activity.id}": ${String(error)}`,
+        );
+        continue;
+      }
+      if (!question || question.payloadId !== quizId) {
+        continue;
+      }
+      if (matched) {
+        log.warn(
+          `Learning: ignoring ambiguous quiz ID "${quizId}" in this workbook.`,
+        );
+        return false;
+      }
+      matched = { cellId: activity.id, question };
+    }
+    if (!matched) {
+      log.warn(
+        `Learning: ignoring unknown quiz "${quizId}" in unit "${unit.id}".`,
+      );
+      return false;
+    }
+    const { cellId, question } = matched;
+    if (
+      !optionIds.every((id) =>
+        question.options.some((option) => option.id === id),
+      )
+    ) {
+      log.warn(`Learning: ignoring invalid choices for quiz "${quizId}".`);
+      return false;
+    }
+    const location: ActivityLocation = {
+      courseId: course.id,
+      unitId: unit.id,
+      activityId: cellId,
+    };
+    const correct = isCorrectQuizAnswer(question.options, optionIds);
+    const newlyComplete = correct && !this.isComplete(location);
+    const positionChanged =
+      this.position.courseId !== course.id ||
+      this.position.unitId !== unit.id ||
+      this.position.activityId !== cellId;
+    if (newlyComplete) {
+      this.markComplete(location);
+    }
+    if (positionChanged) {
+      this.requireWorkspace().progressData.position = location;
+    }
+    if (newlyComplete || positionChanged) {
+      await this.saveProgress();
+      this._onDidChangeState.fire(this.getState());
+    }
+    return correct;
   }
 
   /**
@@ -608,7 +742,7 @@ export class LearningService {
     const unit = this.findUnit(this.position.unitId);
     return (
       unit.activities.some(
-        (ex) => (!type || ex.type === type) && ex.id === cellId,
+        (ex) => (!type || ex.type === type) && notebookCellId(ex) === cellId,
       ) ?? false
     );
   }
@@ -627,7 +761,7 @@ export class LearningService {
     }
     const { course, unit } = resolved;
 
-    const activity = unit.activities.find((activity) => activity.id === cellId);
+    const activity = unit.activities.find((entry) => entry.id === cellId);
 
     let content: ActivityContent;
     if (activity?.type === "exercise") {
@@ -642,6 +776,8 @@ export class LearningService {
       } satisfies ExerciseContent;
     } else if (activity?.type === "code-cell") {
       content = { type: "code-cell", id: cellId, title: activity.title };
+    } else if (activity?.type === "quiz") {
+      content = { type: "quiz", id: activity.id, title: activity.title };
     } else {
       content = {
         type: "lesson-text",
@@ -652,7 +788,7 @@ export class LearningService {
     const location: ActivityLocation = {
       courseId: course.id,
       unitId: unit.id,
-      activityId: cellId,
+      activityId: activity?.id ?? cellId,
     };
 
     const position = {
@@ -682,10 +818,7 @@ export class LearningService {
       return undefined;
     }
     const { activity } = this.findCurrentActivity();
-    // For python-notebook courses the activity ID is the cell ID.
-    return activity.type === "exercise" || activity.type === "code-cell"
-      ? activity.id
-      : undefined;
+    return notebookCellId(activity);
   }
 
   /** Enumerate all available courses. */
@@ -1549,7 +1682,7 @@ export class LearningService {
     }
   }
 
-  /** Turns a catalog activity into the typed content payload (exercise, lesson-example, or lesson-text). */
+  /** Turns a catalog activity into the typed content payload. */
   private resolveActivityContent(
     location: ActivityLocation,
     kata: CatalogUnit,
@@ -1577,12 +1710,12 @@ export class LearningService {
       } satisfies ExerciseContent;
     }
 
-    if (activity.type === "code-cell") {
+    if (activity.type === "code-cell" || activity.type === "quiz") {
       return {
-        type: "code-cell",
+        type: activity.type,
         id: activity.id,
         title: activity.title,
-      } satisfies CodeCellContent;
+      } satisfies CodeCellContent | QuizContent;
     }
 
     // Lesson with a code example

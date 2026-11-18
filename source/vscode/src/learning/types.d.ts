@@ -10,7 +10,7 @@ import type { Uri } from "vscode";
  *
  * - **Course**: a top-level learning experience (e.g. "Quantum Katas").
  * - **Unit**: a thematic group of activities (maps to a kata in the content).
- * - **Activity**: a single lesson or exercise within a unit.
+ * - **Activity**: a lesson, exercise, code cell, or quiz question within a unit.
  */
 
 // ─── Telemetry ───
@@ -40,7 +40,8 @@ export type ActivityContent =
   | LessonTextContent
   | LessonExampleContent
   | ExerciseContent
-  | CodeCellContent;
+  | CodeCellContent
+  | QuizContent;
 
 export interface LessonTextContent {
   type: "lesson-text";
@@ -71,6 +72,12 @@ export interface ExerciseContent {
 
 export interface CodeCellContent {
   type: "code-cell";
+  id: string;
+  title: string;
+}
+
+export interface QuizContent {
+  type: "quiz";
   id: string;
   title: string;
 }
@@ -272,6 +279,13 @@ export interface CatalogCodeCell {
   title: string;
 }
 
+export interface CatalogQuiz {
+  type: "quiz";
+  /** Stable notebook cell ID, like an exercise or ordinary code-cell activity. */
+  id: string;
+  title: string;
+}
+
 export interface CatalogLesson {
   type: "lesson";
   id: string;
@@ -286,7 +300,11 @@ export interface CatalogLesson {
   content?: string;
 }
 
-export type CatalogActivity = CatalogExercise | CatalogCodeCell | CatalogLesson;
+export type CatalogActivity =
+  | CatalogExercise
+  | CatalogCodeCell
+  | CatalogQuiz
+  | CatalogLesson;
 
 export interface CatalogUnit {
   id: string;
