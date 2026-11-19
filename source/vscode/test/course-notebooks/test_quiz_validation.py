@@ -111,6 +111,8 @@ def test_validation_rejects_misclassified_quiz_cells(
     ("prompt", "message"),
     [
         ('" "', "requires question text"),
+        ("None", "requires question text"),
+        ("123", "requires question text"),
         ("question_text", "prompt must be literal data"),
     ],
 )
