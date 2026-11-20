@@ -242,6 +242,7 @@ jobs:
             run_tests=true
           elif git diff --quiet "$BASE_SHA...$HEAD_SHA" -- \
             source/vscode/resources/qdk-learning/courses/ \
+            source/vscode/resources/qdk-learning/utils/ \
             source/vscode/test/course-notebooks/; then
             run_tests=false
           else
