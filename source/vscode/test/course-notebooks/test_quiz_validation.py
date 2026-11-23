@@ -1,7 +1,10 @@
 import json
 import runpy
+import subprocess
+import sys
 from pathlib import Path
 
+import nbformat
 import pytest
 
 from notebook_runner import discover_notebooks
@@ -35,6 +38,45 @@ def _write_notebook(tmp_path: Path, *cells: dict) -> Path:
     path = tmp_path / "author.ipynb"
     path.write_text(json.dumps({"cells": list(cells)}), encoding="utf-8")
     return path
+
+
+def test_course_verifier_reports_malformed_quiz_and_checks_next_unit(
+    tmp_path: Path,
+) -> None:
+    units = [
+        {"dir": "first", "title": "Malformed unit"},
+        {"dir": "second", "title": "Next unit"},
+    ]
+    (tmp_path / "course.json").write_text(
+        json.dumps({"title": "Verifier test", "units": units}), encoding="utf-8"
+    )
+    (tmp_path / "_check_env.py").write_text(
+        "def _is_supported_qdk_chemistry(version):\n"
+        "    return version in {'2.2.0', '2.2.0+local', '2.2.0.post1', '2.3.0', '3.0.0'}\n",
+        encoding="utf-8",
+    )
+    for unit, cell in zip(
+        units,
+        [
+            nbformat.v4.new_code_cell("quiz(", metadata={"tags": ["quiz"]}),
+            nbformat.v4.new_code_cell("value = 1"),
+        ],
+    ):
+        folder = tmp_path / unit["dir"]
+        folder.mkdir()
+        nbformat.write(nbformat.v4.new_notebook(cells=[cell]), folder / "author.ipynb")
+
+    result = subprocess.run(
+        [sys.executable, str(_baker.with_name("verify_course.py")), str(tmp_path)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    assert "Cell 1: invalid quiz syntax" in result.stdout
+    assert "[ok] Next unit" in result.stdout
+    assert not result.stderr
 
 
 @pytest.mark.parametrize(

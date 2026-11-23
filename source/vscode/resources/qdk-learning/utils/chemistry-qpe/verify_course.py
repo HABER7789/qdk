@@ -209,9 +209,10 @@ for unit in manifest["units"]:
                 current_exercise = None
             counts["sections"] += any(tag.startswith("section:") for tag in tags)
             counts["quizzes"] += source.count("<details>")
-            counts["quizzes"] += len(
-                authored_quizzes(cell, cell_number=cell_number)
-            )
+            try:
+                counts["quizzes"] += len(authored_quizzes(cell, cell_number=cell_number))
+            except ValueError as error:
+                problems.append(str(error))
             for name in re.findall(r'<svg[^>]+data-asset="([^"]+)"', source):
                 counts["inline_svgs"] += 1
                 if name not in EXPECTED_INLINE_SVGS:
