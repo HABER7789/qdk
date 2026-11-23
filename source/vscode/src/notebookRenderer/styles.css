@@ -140,25 +140,9 @@
 }
 
 .qdk-learning-option input {
-  position: absolute;
-  width: 1px;
-  height: 1px;
   margin: 0;
-  overflow: hidden;
-  clip-path: inset(50%);
-  white-space: nowrap;
-}
-
-/* Forced colors remove the custom selection colors. Show the native state. */
-@media (forced-colors: active) {
-  .qdk-learning-option input {
-    position: static;
-    flex: none;
-    width: auto;
-    height: auto;
-    margin-block-start: 0.25em;
-    clip-path: none;
-  }
+  margin-block-start: 0.25em;
+  flex: none;
 }
 
 .qdk-learning-option-badge {
@@ -248,14 +232,6 @@
 .qdk-learning-feedback {
   margin-top: 10px;
   font-weight: 600;
-}
-
-.qdk-learning-feedback[data-state="correct"] {
-  color: var(--qdk-l-correct);
-}
-
-.qdk-learning-feedback[data-state="incorrect"] {
-  color: var(--qdk-l-incorrect);
 }
 
 /* ── Controls and actions ─────────────────────────────────────────── */

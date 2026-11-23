@@ -76,7 +76,12 @@ export function renderMultipleChoice(
 
   const controls = document.createElement("div");
   controls.className = "qdk-learning-controls";
-  const onControlsKeyDown = (event: KeyboardEvent) => {
+
+  const actionList = document.createElement("div");
+  actionList.className = "qdk-learning-action-list";
+  actionList.hidden = true;
+
+  const onButtonKeyDown = (event: KeyboardEvent) => {
     // Let Enter activate the button without VS Code also focusing the cell editor.
     if (
       event.key === "Enter" &&
@@ -88,14 +93,12 @@ export function renderMultipleChoice(
       event.stopPropagation();
     }
   };
-  controls.addEventListener("keydown", onControlsKeyDown);
-  context.addDisposable(() =>
-    controls.removeEventListener("keydown", onControlsKeyDown),
-  );
-
-  const actionList = document.createElement("div");
-  actionList.className = "qdk-learning-action-list";
-  actionList.hidden = true;
+  for (const container of [controls, actionList]) {
+    container.addEventListener("keydown", onButtonKeyDown);
+    context.addDisposable(() =>
+      container.removeEventListener("keydown", onButtonKeyDown),
+    );
+  }
 
   // Include the payload id when available, plus a counter so two outputs never
   // share a radio group even if a notebook repeats an id.
