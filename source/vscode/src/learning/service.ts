@@ -11,7 +11,6 @@ import {
   isCorrectQuizAnswer,
   isLearningId,
   isQuizAnswerState,
-  isQuizOptionIds,
   isRecord,
   MIME_TYPE,
   parseLearningPayload,
@@ -488,11 +487,31 @@ export class LearningService {
     quizId: string,
     optionIds: string[],
   ): Promise<boolean> {
+    let receivedItems: Set<vscode.NotebookCellOutputItem> | undefined;
+    if (!this.initialized) {
+      // Initialization can outlast an output replacement. Remember the quiz
+      // items, not the document version, so unrelated edits don't lose a check.
+      receivedItems = new Set(
+        workbook
+          .getCells()
+          .flatMap((cell) =>
+            cell.outputs.flatMap((output) =>
+              output.items.filter((item) => item.mime === MIME_TYPE),
+            ),
+          ),
+      );
+      await this.tryInitialize();
+    }
+
     const matched = this.resolveWorkbookQuiz(workbook, quizId);
     if (!matched) {
       return false;
     }
-    const { location, question } = matched;
+    const { location, question, cell, item } = matched;
+    if (receivedItems && !receivedItems.has(item)) {
+      log.warn(`Learning: ignoring a check for replaced quiz "${quizId}".`);
+      return false;
+    }
     if (!canRestoreQuizAnswer(question, optionIds)) {
       log.warn(`Learning: ignoring invalid choices for quiz "${quizId}".`);
       return false;
@@ -507,11 +526,12 @@ export class LearningService {
     if (correct && !this.isComplete(location)) {
       this.markComplete(location);
     }
-    // A checked answer can arrive after navigation has started. Save it
-    // without moving the learner back to the sending workbook.
+    // Checking a quiz makes it current only while its cell is still selected.
+    const editor = vscode.window.activeNotebookEditor;
     const position = ws.progressData.position;
     if (
-      vscode.window.activeNotebookEditor?.notebook === workbook &&
+      editor?.notebook === workbook &&
+      workbook.cellAt(editor.selection.start) === cell &&
       position.courseId === location.courseId &&
       position.unitId === location.unitId
     ) {
@@ -579,7 +599,12 @@ export class LearningService {
     workbook: vscode.NotebookDocument,
     quizId: string,
   ):
-    | { location: ActivityLocation; question: MultipleChoicePayload }
+    | {
+        location: ActivityLocation;
+        question: MultipleChoicePayload;
+        cell: vscode.NotebookCell;
+        item: vscode.NotebookCellOutputItem;
+      }
     | undefined {
     const resolved = this.workspace
       ? this.resolveWorkbookLocation(workbook.uri)
@@ -595,6 +620,8 @@ export class LearningService {
       | {
           cellId: string;
           question: MultipleChoicePayload;
+          cell: vscode.NotebookCell;
+          item: vscode.NotebookCellOutputItem;
         }
       | undefined;
     for (const cell of workbook.getCells()) {
@@ -604,27 +631,25 @@ export class LearningService {
       if (!activity) {
         continue;
       }
-      let question: MultipleChoicePayload | undefined;
+      let output:
+        | {
+            question: MultipleChoicePayload;
+            item: vscode.NotebookCellOutputItem;
+          }
+        | undefined;
       try {
-        for (const output of cell.outputs) {
-          for (const item of output.items) {
+        for (const cellOutput of cell.outputs) {
+          for (const item of cellOutput.items) {
             if (item.mime !== MIME_TYPE) {
               continue;
             }
             const payload = parseLearningPayload(
               JSON.parse(new TextDecoder().decode(item.data)),
             );
-            if (
-              !isLearningId(payload.payloadId) ||
-              question !== undefined ||
-              payload.options.length < 2 ||
-              !isQuizOptionIds(payload.options.map((option) => option.id))
-            ) {
-              throw new Error(
-                "expected one quiz output with valid question and option IDs",
-              );
+            if (!isLearningId(payload.payloadId) || output !== undefined) {
+              throw new Error("expected one quiz output with a valid quiz ID");
             }
-            question = payload;
+            output = { question: payload, item };
           }
         }
       } catch (error) {
@@ -633,7 +658,7 @@ export class LearningService {
         );
         continue;
       }
-      if (!question || question.payloadId !== quizId) {
+      if (!output || output.question.payloadId !== quizId) {
         continue;
       }
       if (matched) {
@@ -642,7 +667,7 @@ export class LearningService {
         );
         return undefined;
       }
-      matched = { cellId: activity.id, question };
+      matched = { cellId: activity.id, cell, ...output };
     }
     if (!matched) {
       log.warn(
@@ -650,13 +675,13 @@ export class LearningService {
       );
       return undefined;
     }
-    const { cellId, question } = matched;
+    const { cellId, question, cell, item } = matched;
     const location: ActivityLocation = {
       courseId: course.id,
       unitId: unit.id,
       activityId: cellId,
     };
-    return { location, question };
+    return { location, question, cell, item };
   }
 
   /**

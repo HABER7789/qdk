@@ -252,8 +252,14 @@ export function parseLearningPayload(value: unknown): LearningPayload {
   ) {
     throw new Error("QDK learning payload has a non-boolean multiSelect.");
   }
-  if (!Array.isArray(payload.options) || payload.options.length === 0) {
-    throw new Error("QDK learning payload has no options.");
+  if (
+    !Array.isArray(payload.options) ||
+    payload.options.length < 2 ||
+    payload.options.length > MAX_OPTION_IDS
+  ) {
+    throw new Error(
+      `QDK learning payload must have 2 to ${MAX_OPTION_IDS} options.`,
+    );
   }
 
   const options: MultipleChoicePayload["options"] = [];
@@ -262,8 +268,8 @@ export function parseLearningPayload(value: unknown): LearningPayload {
     if (!isRecord(option)) {
       throw new Error("QDK learning payload has a malformed option.");
     }
-    if (typeof option.id !== "string" || option.id.length === 0) {
-      throw new Error("QDK learning payload has an option with no id.");
+    if (!isLearningId(option.id)) {
+      throw new Error("QDK learning payload has an invalid option id.");
     }
     if (ids.has(option.id)) {
       throw new Error(

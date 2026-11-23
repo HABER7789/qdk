@@ -109,6 +109,37 @@ const quiz: MultipleChoicePayload = {
 };
 
 suite("Learning notebook quiz activities", () => {
+  test("do not attach an exercise hint across a quiz cell", () => {
+    const activities = parseNotebookActivities(
+      JSON.stringify({
+        cells: [
+          {
+            id: "exercise",
+            cell_type: "code",
+            metadata: { tags: ["exercise"] },
+            source: "@exercise\ndef answer(): return 0",
+          },
+          {
+            id: "quiz-cell",
+            cell_type: "code",
+            metadata: { tags: ["quiz"] },
+            source: 'quiz("first-question", prompt="Question", options=[])',
+          },
+          {
+            id: "orphan-hint",
+            cell_type: "markdown",
+            metadata: { tags: ["hint"] },
+            source: "This hint is no longer next to the exercise.",
+          },
+        ],
+      }),
+      "test-unit",
+    );
+    const exercise = activities[0];
+    assert(exercise.type === "exercise");
+    assert.isEmpty(exercise.hints);
+  });
+
   test("discover one stable activity per quiz cell, independently of saved outputs", () => {
     const activities = parseNotebookActivities(
       JSON.stringify({
@@ -315,9 +346,35 @@ suite("Learning notebook quiz activities", () => {
       () =>
         parseLearningPayload({
           ...quiz,
-          options: [{ id: "right", text: "Right", correct: "false" }],
+          options: [quiz.options[0], { ...quiz.options[1], correct: "false" }],
         }),
       /does not say whether it is correct/,
+    );
+  });
+
+  test("reject quizzes the host cannot record because of option counts or IDs", () => {
+    const extraOptions = Array.from({ length: 7 }, (_, index) => ({
+      id: `extra-${index}`,
+      text: "Extra",
+      correct: false,
+    }));
+    for (const options of [
+      quiz.options.slice(0, 1),
+      [...quiz.options, ...extraOptions],
+    ]) {
+      assert.throws(
+        () => parseLearningPayload({ ...quiz, options }),
+        /2 to 8 options/,
+      );
+    }
+
+    assert.throws(
+      () =>
+        parseLearningPayload({
+          ...quiz,
+          options: [quiz.options[0], { ...quiz.options[1], id: "Wrong" }],
+        }),
+      /invalid option id/,
     );
   });
 

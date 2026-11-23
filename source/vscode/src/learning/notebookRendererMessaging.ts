@@ -57,6 +57,17 @@ export function registerNotebookRendererMessaging(
       }
 
       try {
+        if (message.type === "qdk-learning/quiz-answered") {
+          // Record the output before initialization yields. The service also
+          // verifies that the output belongs to a loaded course workbook.
+          await service.recordQuizAnswer(
+            event.editor.notebook,
+            message.quizId,
+            message.optionIds,
+          );
+          return;
+        }
+
         // Detect only — never `createIfMissing`. This runs on a message a
         // notebook asked for, and `notebookSync.ts` already sets the rule: a
         // notebook-driven event must not materialize a learning workspace
@@ -78,15 +89,6 @@ export function registerNotebookRendererMessaging(
         ) {
           log.warn(
             "Learning: ignoring a renderer message from a notebook outside the loaded course.",
-          );
-          return;
-        }
-
-        if (message.type === "qdk-learning/quiz-answered") {
-          await service.recordQuizAnswer(
-            event.editor.notebook,
-            message.quizId,
-            message.optionIds,
           );
           return;
         }

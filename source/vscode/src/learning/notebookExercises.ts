@@ -122,8 +122,12 @@ export function parseNotebookActivities(
     }
 
     if (tags.includes(QUIZ_TAG)) {
+      const kind = cellKind(cell);
+      if (kind === "code") {
+        current = undefined;
+      }
       const cellId = cellIdOf(cell);
-      if (cellKind(cell) !== "code" || !cellId) {
+      if (kind !== "code" || !cellId) {
         log.warn(
           `Learning: skipping a quiz in unit "${unitLabel}": expected a code cell with an id.`,
         );
